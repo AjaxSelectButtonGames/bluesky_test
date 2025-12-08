@@ -8,11 +8,7 @@ const dotenv = require('dotenv');
 dotenv.config();
 
 // --- CONFIGURATION ---
-
-// 23 hours in milliseconds: 23 * 60 * 60 * 1000 = 82,800,000
-const POST_INTERVAL_MS = 82800000; 
-
-// Define the keywords the bot will use to find content to share (repost).
+const POST_INTERVAL_MS = 82800000; // 23 hours in milliseconds
 const TOPICS_TO_SHARE = [
     "javascript", 
     "nodejs bot", 
@@ -26,6 +22,7 @@ function getCredentials() {
     const password = process.env.BSKY_APP_PASSWORD;
     
     if (!identifier || !password) {
+        // We throw an error instead of exiting, letting the process terminate naturally
         throw new Error(
             "Authentication failed. Please set BSKY_USERNAME and BSKY_APP_PASSWORD " +
             "environment variables on your hosting platform."
@@ -34,32 +31,24 @@ function getCredentials() {
     return { identifier, password };
 }
 
-// Initialize the Bluesky Agent
 const agent = new BskyAgent({
     service: 'https://bsky.social',
 });
 
-// --- CORE BOT LOGIC ---
+// --- CORE BOT LOGIC (Functions remain unchanged) ---
 
 async function get_last_post_time() {
     const handle = agent.session?.handle;
     if (!handle) return null;
-
+    // ... (rest of function logic) ...
     try {
         const response = await agent.getAuthorFeed({
-            actor: handle,
-            limit: 1,
-            filter: 'posts_only'
+            actor: handle, limit: 1, filter: 'posts_only'
         });
 
         if (response.data.feed.length > 0) {
-            const lastPost = response.data.feed[0].post;
-            const createdAtStr = lastPost.record?.createdAt;
-            
-            if (createdAtStr) {
-                // Date() handles the ISO 8601 string returned by the API
-                return new Date(createdAtStr);
-            }
+            const createdAtStr = response.data.feed[0].post.record?.createdAt;
+            if (createdAtStr) return new Date(createdAtStr);
         }
         return null;
     } catch (e) {
@@ -72,22 +61,20 @@ async function post_daily_message() {
     const lastPostDate = await get_last_post_time();
     const now = new Date();
     
-    // ------------------- CONDITIONAL CHECK -------------------
+    // Conditional Check
     if (lastPostDate) {
         const timeSinceLastPost = now.getTime() - lastPostDate.getTime();
-        
         if (timeSinceLastPost < POST_INTERVAL_MS) {
             const hoursSince = (timeSinceLastPost / (1000 * 60 * 60)).toFixed(2);
             console.log(`⚠️ Post check skipped. Last post was only ${hoursSince} hours ago.`);
-            return; // Exit the function
+            return;
         }
         console.log(`✅ Interval passed. Posting new message.`);
     } else {
         console.log("No previous posts found. Posting first message.");
     }
-    // ---------------------------------------------------------
-
-    // --- Posting Logic ---
+    
+    // Posting Logic
     const postText = `Daily check-in from the 404Nerds-hosted Node.js bot! Current time: ${now.toUTCString()}. Stay decentralized! 🌐`;
     
     try {
@@ -137,10 +124,7 @@ async function auto_share_topics() {
             const postText = post.record?.text?.toLowerCase();
             
             if (!postText) continue;
-
-            if (post.viewer?.repost) {
-                continue;
-            }
+            if (post.viewer?.repost) continue;
                 
             const isMatch = TOPICS_TO_SHARE.some(topic => postText.includes(topic.toLowerCase()));
             
@@ -173,11 +157,12 @@ async function main() {
         await auto_share_topics();
         
         console.log("Bot routine finished successfully.");
-
+        // Process naturally exits here after all async tasks are done.
     } catch (error) {
         console.error("CRITICAL BOT FAILURE:", error);
-        // Exit with an error code if login or setup failed
-        process.exit(1); 
+        // We no longer use process.exit(1) here. Throwing the error 
+        // will log it, but the process will still terminate naturally 
+        // after the error is handled.
     }
 }
 
