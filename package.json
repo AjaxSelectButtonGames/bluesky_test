@@ -1,37 +1,20 @@
 {
-  "name": "nerd-hosting",
+  "name": "bluesky-test-bot",
   "version": "1.0.0",
-  "description": "Nerd Hosting for Discord Bots and Bluesky Bots - easy to use and friendly sandbox environment",
-  "main": "src/index.js",
+  "description": "Test bot for NerdHosting Bluesky integration",
+  "main": "index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "nodemon src/index.js",
-    "test": "echo \"No tests yet\" && exit 0"
+    "start": "node index.js",
+    "test": "echo \"Bot is ready to test!\" && exit 0"
   },
   "keywords": [
-    "discord",
     "bluesky",
     "bot",
-    "hosting",
-    "sandbox"
+    "atproto"
   ],
-  "author": "",
+  "author": "NerdHosting",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.18.2",
-    "simple-git": "^3.21.0",
-    "uuid": "^9.0.1",
-    "dotenv": "^16.3.1",
-    "express-validator": "^7.0.1",
-    "winston": "^3.11.0",
-    "pg": "^8.11.3",
-    "bcrypt": "^5.1.1",
-    "jsonwebtoken": "^9.0.2",
-    "express-session": "^1.17.3",
-    "cookie-parser": "^1.4.6",
-    "cors": "^2.8.5"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.2"
+    "@atproto/api": "^0.12.0"
   }
 }
