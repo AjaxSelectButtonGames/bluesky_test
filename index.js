@@ -1,116 +1,149 @@
-// Simple Bluesky Bot - Ready to deploy on NerdHosting!
-// Just add your credentials as environment variables in the dashboard
-/**
-const { BskyAgent } = require('@atproto/api');
+import os
+import time
+import requests
+from datetime import datetime, timedelta, timezone # <-- NEW IMPORTS
+from atproto import Client, models
 
-const agent = new BskyAgent({
-    service: 'https://bsky.social'
-});
+# --- CONFIGURATION ---
 
-async function main() {
-    try {
-        console.log('🦋 Simple Bluesky Bot Starting...');
-        console.log('📅 Started at:', new Date().toISOString());
+# Define the minimum time difference between two posts. 
+# 23 hours ensures you meet the "daily" goal even if the cron job drifts slightly.
+POST_INTERVAL_HOURS = 23 
+
+TOPICS_TO_SHARE = [
+    "python code", 
+    "programming bot", 
+    "404nerds"
+]
+
+# (The get_credentials function remains the same as before)
+def get_credentials():
+    username = os.environ.get('BSKY_USERNAME')
+    app_password = os.environ.get('BSKY_APP_PASSWORD')
+    
+    if not username or not app_password:
+        raise ValueError(
+            "Authentication failed. Please set BSKY_USERNAME and BSKY_APP_PASSWORD "
+            "environment variables on your hosting platform."
+        )
+    return username, app_password
+
+class BlueskyBot:
+    """A simple bot to automate posting, following, and reposting."""
+
+    def __init__(self, username, password):
+        self.client = Client()
+        print(f"Logging in as {username}...")
+        self.client.login(username, password)
+        print("Login successful.")
+        self.handle = username
+        self.did = self.client.me.did
+    
+    # --- NEW / MODIFIED FUNCTION ---
+    def get_last_post_time(self) -> datetime | None:
+        """
+        Fetches the timestamp of the last post made by the bot.
         
-        // Get credentials from environment (set in NerdHosting dashboard)
-        const handle = process.env.BLUESKY_HANDLE;
-        const appPassword = process.env.BLUESKY_APP_PASSWORD;
-        
-        if (!handle || !appPassword) {
-            console.error('❌ Missing environment variables!');
-            console.error('   Please set in NerdHosting dashboard:');
-            console.error('   - BLUESKY_HANDLE (your handle like: mybot.bsky.social)');
-            console.error('   - BLUESKY_APP_PASSWORD (get from bsky.app/settings/app-passwords)');
-            process.exit(1);
-        }
-        
-        console.log(`📝 Logging in as: ${handle}`);
-        
-        // Login
-        await agent.login({
-            identifier: handle,
-            password: appPassword
-        });
-        
-        console.log('✅ Login successful!');
-        
-        // Get and display profile stats
-        const profile = await agent.getProfile({ actor: agent.session.did });
-        console.log(`\n👤 Account Info:`);
-        console.log(`   Handle: @${profile.data.handle}`);
-        console.log(`   Display Name: ${profile.data.displayName || 'Not set'}`);
-        console.log(`   Followers: ${profile.data.followersCount}`);
-        console.log(`   Following: ${profile.data.followsCount}`);
-        console.log(`   Posts: ${profile.data.postsCount}`);
-        
-        // Simple heartbeat - log every minute that bot is alive
-        console.log('\n💓 Bot is running! Heartbeat every 60 seconds...');
-        console.log('   (This keeps the bot alive and shows it\'s working)\n');
-        
-        let heartbeatCount = 0;
-        setInterval(() => {
-            heartbeatCount++;
-            const now = new Date().toLocaleTimeString();
-            console.log(`[${now}] ❤️  Heartbeat #${heartbeatCount} - Bot is alive and well!`);
-        }, 60000); // Every 60 seconds
-        
-        // Check mentions every 5 minutes (more realistic for a real bot)
-        setInterval(async () => {
-            try {
-                const notifications = await agent.listNotifications({ limit: 10 });
-                const unread = notifications.data.notifications.filter(n => !n.isRead);
+        Returns:
+            datetime: The UTC datetime of the last post, or None if no posts are found.
+        """
+        try:
+            # Use get_author_feed to get the bot's own posts, ordered chronologically
+            # We filter for only the bot's primary posts (no replies) and limit to 1.
+            feed_response = self.client.get_author_feed(
+                actor=self.handle, 
+                limit=1,
+                filter='posts_only'
+            )
+            
+            # The first item in the feed is the most recent post
+            if feed_response.feed:
+                last_post = feed_response.feed[0].post
                 
-                if (unread.length > 0) {
-                    console.log(`\n🔔 You have ${unread.length} new notification(s):`);
-                    unread.slice(0, 3).forEach(n => {
-                        console.log(`   - ${n.reason} from @${n.author.handle}`);
-                    });
-                    console.log('');
-                }
-            } catch (error) {
-                console.error(`⚠️  Error checking notifications: ${error.message}`);
-            }
-        }, 300000); // Every 5 minutes
+                # The timestamp is stored in the record's 'createdAt' field as an ISO 8601 string
+                created_at_str = last_post.record.created_at
+                
+                # Convert the ISO string to a timezone-aware datetime object
+                # We replace 'Z' with '+00:00' for reliable parsing, and ensure it's UTC
+                last_post_time = datetime.fromisoformat(
+                    created_at_str.replace('Z', '+00:00')
+                ).astimezone(timezone.utc)
+                
+                return last_post_time
+            
+            return None # No posts found in the feed
+
+        except Exception as e:
+            print(f"❌ Error checking last post time: {e}")
+            return None
+
+    def post_daily_message(self):
+        """Task 1: Check if the post interval has passed, then post a message."""
         
-    } catch (error) {
-        console.error('\n❌ Bot failed to start!');
-        console.error(`Error: ${error.message}`);
+        last_post_dt = self.get_last_post_time()
         
-        if (error.message.includes('Invalid identifier or password')) {
-            console.error('\n💡 Tips:');
-            console.error('   1. Make sure you created an APP PASSWORD (not your main password)');
-            console.error('   2. Get app password: https://bsky.app/settings/app-passwords');
-            console.error('   3. Handle should be like: yourname.bsky.social');
-            console.error('   4. Or use your email address');
-        }
+        # Current time in UTC for comparison
+        now_utc = datetime.now(timezone.utc)
         
-        process.exit(1);
-    }
-}
+        if last_post_dt:
+            time_since_last_post = now_utc - last_post_dt
+            
+            # Define the required interval
+            required_interval = timedelta(hours=POST_INTERVAL_HOURS)
 
-// Handle graceful shutdown
-process.on('SIGINT', () => {
-    console.log('\n\n👋 Shutting down bot...');
-    process.exit(0);
-});
+            if time_since_last_post < required_interval:
+                print(f"⚠️ Post check skipped. Last post was only {time_since_last_post} ago. Required interval is {required_interval}.")
+                return # Exit the function if the interval hasn't passed
+            
+            print(f"✅ Interval passed ({time_since_last_post} since last post). Posting new message.")
 
-process.on('SIGTERM', () => {
-    console.log('\n\n👋 Shutting down bot...');
-    process.exit(0);
-});
+        else:
+            print("No previous posts found. Posting first message.")
 
-main();
-**/
-// TEST BOT - SHOULD BE BLOCKED
-// This bot requires a package that's not on the whitelist
-// Could contain malicious code or security vulnerabilities
+        # --- Posting Logic (Same as before) ---
+        current_time = now_utc.strftime("%H:%M:%S UTC")
+        post_text = (
+            f"Daily check-in from the 404Nerds-hosted bot! "
+            f"Current time: {current_time}. Keep building awesome things! 🛠️"
+        )
+        
+        try:
+            self.client.send_post(post_text)
+            print(f"✅ Posted daily message: '{post_text[:50]}...'")
+        except Exception as e:
+            print(f"❌ Failed to post daily message: {e}")
 
-const shelljs = require('shelljs');
+    # (The auto_follow_followers and auto_share_topics functions remain the same)
+    def auto_follow_followers(self):
+        # ... (Same logic as provided in the initial answer)
+        pass
 
-console.log('Starting bad package test bot...');
+    def auto_share_topics(self):
+        # ... (Same logic as provided in the initial answer)
+        pass
 
-// Try to execute shell commands via shelljs
-shelljs.exec('whoami');
-shelljs.exec('pwd');
 
-console.log('If you see this, security scanner failed!');
+def run_bot_routine():
+    """Main execution entry point."""
+    try:
+        username, password = get_credentials()
+        bot = BlueskyBot(username, password)
+        
+        # 1. Perform conditional daily post
+        bot.post_daily_message()
+        
+        # 2. Perform follow-back check (unconditional, runs every time)
+        # bot.auto_follow_followers()
+        
+        # 3. Perform topic sharing check (unconditional, runs every time)
+        # bot.auto_share_topics()
+        
+    except ValueError as e:
+        print(f"CRITICAL ERROR: {e}")
+    except requests.exceptions.HTTPError as e:
+        print(f"BLUESKY API ERROR: {e}")
+    except Exception as e:
+        print(f"AN UNEXPECTED ERROR OCCURRED: {e}")
+
+if __name__ == "__main__":
+    run_bot_routine()
