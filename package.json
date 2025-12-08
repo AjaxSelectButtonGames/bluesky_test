@@ -7,6 +7,5 @@
   },
   "dependencies": {
     "@atproto/api": "^0.1.0"
-    // Removed "dotenv" dependency
   }
 }
