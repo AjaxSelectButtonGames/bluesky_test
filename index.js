@@ -1,6 +1,6 @@
 // Simple Bluesky Bot - Ready to deploy on NerdHosting!
 // Just add your credentials as environment variables in the dashboard
-
+/**
 const { BskyAgent } = require('@atproto/api');
 
 const agent = new BskyAgent({
@@ -100,3 +100,17 @@ process.on('SIGTERM', () => {
 });
 
 main();
+**/
+// TEST BOT - SHOULD BE BLOCKED
+// This bot requires a package that's not on the whitelist
+// Could contain malicious code or security vulnerabilities
+
+const shelljs = require('shelljs');
+
+console.log('Starting bad package test bot...');
+
+// Try to execute shell commands via shelljs
+shelljs.exec('whoami');
+shelljs.exec('pwd');
+
+console.log('If you see this, security scanner failed!');
