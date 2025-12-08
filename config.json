@@ -1,0 +1,6 @@
+{
+  "name": "BlueskyPythonBot",
+  "runtime": "python",
+  "description": "A scheduled Bluesky posting and automation bot.",
+  "start_command": "python3 bluesky_bot.py"
+}
