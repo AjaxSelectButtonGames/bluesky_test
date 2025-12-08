@@ -6,7 +6,7 @@ const process = require('process');
 const BSKY_SERVICE_URL = 'https://bsky.social';
 
 // Task Scheduling Intervals
-const TASK_INTERVAL_MINUTES = 15; // How often to run all tasks (login check, follow, repost)
+const TASK_INTERVAL_MINUTES = 15;
 const TASK_INTERVAL_MS = TASK_INTERVAL_MINUTES * 60 * 1000;
 
 // Daily Post Interval
@@ -22,7 +22,7 @@ const TOPICS_TO_SHARE = [
 
 let session = null;
 let headers = {};
-let isRunning = false; // Prevents overlapping task executions
+let isRunning = false;
 
 function getCredentials() {
     const identifier = process.env.BSKY_USERNAME;
@@ -54,7 +54,24 @@ async function login() {
         return true;
     } catch (error) {
         console.error("❌ CRITICAL: Login failed. Bot cannot run.");
+        session = null;
+        headers = {};
         return false;
+    }
+}
+
+// Function to handle expired token errors across all API calls
+function handleApiError(e) {
+    const errorMessage = e.response?.data?.error;
+    
+    if (errorMessage === 'ExpiredToken') {
+        console.error("🚨 Detected Expired Token. Invalidating session for re-login.");
+        session = null;
+        headers = {};
+        return true; // Token was expired
+    } else {
+        console.error("❌ API Error:", e.response?.data || e.message);
+        return false; // Other API error
     }
 }
 
@@ -74,8 +91,7 @@ async function get_last_post_time() {
         }
         return null;
     } catch (e) {
-        // If the API call fails here, it often means the token expired.
-        console.error("❌ API Error checking last post time (possible expired token):", e.response?.data || e.message);
+        handleApiError(e);
         return null;
     }
 }
@@ -84,15 +100,13 @@ async function post_daily_message() {
     const lastPostDate = await get_last_post_time();
     const now = new Date();
     
-    if (lastPostDate) {
-        const timeSinceLastPost = now.getTime() - lastPostDate.getTime();
-        if (timeSinceLastPost < POST_INTERVAL_MS) {
-            const hoursSince = (timeSinceLastPost / (1000 * 60 * 60)).toFixed(2);
+    // Skip if lastPostDate is null (due to previous token error) or if interval not met
+    if (!session || (lastPostDate && now.getTime() - lastPostDate.getTime() < POST_INTERVAL_MS)) {
+        if (lastPostDate) {
+            const hoursSince = ((now.getTime() - lastPostDate.getTime()) / (1000 * 60 * 60)).toFixed(2);
             console.log(`⚠️ Post check skipped. Last post was only ${hoursSince} hours ago.`);
-            return;
         }
-    } else {
-        console.log("No previous posts found. Posting first message.");
+        return;
     }
     
     const postText = `Daily check-in from the 404Nerds 24/7 bot! Current time: ${now.toUTCString()}. System is running continuously!`;
@@ -110,45 +124,108 @@ async function post_daily_message() {
         
         console.log(`✅ Posted daily message: '${postText.substring(0, 50)}...'`);
     } catch (e) {
-        console.error("❌ Failed to post daily message:", e.response?.data || e.message);
+        handleApiError(e);
     }
 }
 
 async function auto_follow_followers() {
-    // Logic for getting follows/followers and creating follow records (Axios calls)
+    if (!session) return;
+    console.log("Checking for new followers to follow back...");
+    
     try {
-        // ... (Axios implementation for getFollows and getFollowers) ...
-        // ... (This logic is identical to the previous Axios version) ...
-        console.log("✅ Finished follow-back check.");
+        const followsResponse = await axios.get(`${BSKY_SERVICE_URL}/xrpc/app.bsky.graph.getFollows`, {
+            headers: headers,
+            params: { actor: session.handle }
+        });
+        const followedDIDs = new Set(followsResponse.data.follows.map(f => f.did));
+
+        const followersResponse = await axios.get(`${BSKY_SERVICE_URL}/xrpc/app.bsky.graph.getFollowers`, {
+            headers: headers,
+            params: { actor: session.handle }
+        });
+        
+        let newlyFollowedCount = 0;
+        
+        for (const follower of followersResponse.data.followers) {
+            if (!followedDIDs.has(follower.did)) {
+                await axios.post(`${BSKY_SERVICE_URL}/xrpc/com.atproto.repo.createRecord`, {
+                    repo: session.did,
+                    collection: 'app.bsky.graph.follow',
+                    record: {
+                        $type: 'app.bsky.graph.follow',
+                        subject: follower.did,
+                        createdAt: new Date().toISOString(),
+                    }
+                }, { headers });
+
+                console.log(`🤝 Followed back: @${follower.handle}`);
+                newlyFollowedCount++;
+            }
+        }
+        
+        console.log(`✅ Finished follow-back check. Followed ${newlyFollowedCount} new users.`);
     } catch (e) {
-        console.error("❌ Error during follow-back check:", e.response?.data || e.message);
+        handleApiError(e);
     }
 }
 
 async function auto_share_topics() {
-    // Logic for getting timeline and creating repost records (Axios calls)
+    if (!session) return;
+    console.log("Searching for topics to repost...");
+    
     try {
-        // ... (Axios implementation for getTimeline and createRepost) ...
-        // ... (This logic is identical to the previous Axios version) ...
-        console.log(`✅ Finished auto-share check.`);
+        const feedResponse = await axios.get(`${BSKY_SERVICE_URL}/xrpc/app.bsky.feed.getTimeline`, {
+            headers: headers,
+            params: { limit: 50 }
+        });
+        
+        let repostedCount = 0;
+        
+        for (const feedItem of feedResponse.data.feed) {
+            const post = feedItem.post;
+            const postText = post.record?.text?.toLowerCase();
+            
+            if (!postText || post.viewer?.repost) continue;
+                
+            const isMatch = TOPICS_TO_SHARE.some(topic => postText.includes(topic.toLowerCase()));
+            
+            if (isMatch) {
+                await axios.post(`${BSKY_SERVICE_URL}/xrpc/com.atproto.repo.createRecord`, {
+                    repo: session.did,
+                    collection: 'app.bsky.feed.repost',
+                    record: {
+                        $type: 'app.bsky.feed.repost',
+                        subject: {
+                            cid: post.cid,
+                            uri: post.uri,
+                        },
+                        createdAt: new Date().toISOString(),
+                    }
+                }, { headers });
+                
+                repostedCount++;
+                console.log(`🔄 Reposted matching post by @${post.author.handle}: '${postText.substring(0, 30)}...'`);
+            }
+        }
+        
+        console.log(`✅ Finished auto-share check. Reposted ${repostedCount} posts.`);
     } catch (e) {
-        console.error("❌ Error during auto-share check:", e.response?.data || e.message);
+        handleApiError(e);
     }
 }
 
 // --- MAIN EXECUTION LOOP ---
 
 async function runBotRoutine() {
-    if (isRunning) return; // Prevent concurrent execution
+    if (isRunning) return;
     isRunning = true;
     console.log(`\n--- Starting routine at ${new Date().toTimeString()} ---`);
 
     try {
-        // 1. Check if we are logged in or if the session expired
-        if (!session || !session.accessJwt) {
+        // 1. Check if session is missing or was deliberately invalidated
+        if (!session) {
             const success = await login();
             if (!success) {
-                // If login fails, we stop the current loop execution.
                 isRunning = false;
                 return;
             }
@@ -161,7 +238,7 @@ async function runBotRoutine() {
 
     } catch (error) {
         console.error("CRITICAL ERROR during routine execution:", error.message || error);
-        // Force re-login on next cycle if any task failed unexpectedly
+        // Force re-login on next cycle if any unhandled error occurred
         session = null; 
     } finally {
         isRunning = false;
@@ -176,10 +253,9 @@ async function main() {
     await login();
 
     // Set the continuous loop
-    // Runs the routine every 15 minutes
     setInterval(runBotRoutine, TASK_INTERVAL_MS);
 
-    // Initial run after startup
+    // Initial run after startup (to avoid waiting 15 mins)
     runBotRoutine();
 }
 
