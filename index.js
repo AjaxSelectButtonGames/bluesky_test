@@ -226,5 +226,5 @@ async function main() {
     }
 }
 
-// Execute the main function
+//the main function
 main();
