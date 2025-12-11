@@ -16,24 +16,25 @@ async function login() {
   console.log("Logged in as:", process.env.BLUESKY_USERNAME);
 }
 
-// Auto-follow user before reposting
+// Auto-follow logic
 async function autoFollow(did) {
   try {
     const rel = await agent.rpc.get('app.bsky.graph.getRelationships', {
       params: { actor: did, viewer: agent.session.did },
     });
+
     const following = rel.data.relationships?.[0]?.following;
 
     if (!following) {
-      console.log("Following:", did);
+      console.log(`Following user: ${did}`);
       await agent.follow(did);
     }
   } catch (err) {
-    console.error("Follow error:", err);
+    console.error("Auto-follow error:", err);
   }
 }
 
-// Scan timeline and repost tagged content
+// Auto-repost logic
 async function checkForInteresting() {
   try {
     const timeline = await agent.getTimeline({ limit: 50 });
@@ -43,54 +44,34 @@ async function checkForInteresting() {
       if (!post?.record?.text) continue;
 
       const text = post.record.text.toLowerCase();
+
       const hasTag = TAGS.some(tag => text.includes(`#${tag}`));
       if (!hasTag) continue;
 
-      const did = post.author.did;
+      const authorDid = post.author.did;
 
-      await autoFollow(did);
+      // Follow them before reposting
+      await autoFollow(authorDid);
 
-      console.log(`Reposting ${post.uri}`);
-      await agent.repost(post.uri, post.cid);
-    }
-  } catch (err) {
-    console.error("Timeline scan error:", err);
-  }
-}
-
-// Listen to DMs for "!post ..."
-async function checkDirectMessages() {
-  try {
-    const { data } = await agent.rpc.get('chat.bsky.convo.listConvos', {});
-    for (const convo of data.convos) {
-      const msgs = convo.messages || [];
-
-      for (const msg of msgs) {
-        if (!msg?.record?.text) continue;
-
-        const text = msg.record.text.trim();
-
-        if (text.startsWith("!post ")) {
-          const content = text.replace("!post ", "").trim();
-          if (!content.length) continue;
-
-          console.log("Posting DM content:", content);
-          await agent.post({ text: content });
-        }
+      try {
+        console.log(`Reposting: ${post.uri}`);
+        await agent.repost(post.uri, post.cid);
+      } catch (err) {
+        console.error("Repost error:", err.message);
       }
     }
   } catch (err) {
-    console.error("DM error:", err);
+    console.error("Timeline error:", err);
   }
 }
 
-// Start the bot
+// Main loop
 async function main() {
   await login();
-  console.log("Bluesky bot running...");
+  console.log("Auto-follow + Auto-repost bot is running...");
 
+  // Check timeline every 30 seconds
   setInterval(checkForInteresting, 30 * 1000);
-  setInterval(checkDirectMessages, 30 * 1000);
 }
 
 main();
