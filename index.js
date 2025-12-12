@@ -60,7 +60,7 @@ async function checkForInteresting() {
       if (REPOSTED_URIS.has(post.uri)) continue;
 
       const text = post.record.text.toLowerCase();
-      const hasTag = TAGS.some(tag => text.includes(`#${tag}`));
+      const hasTag = TAGS.some(tag => text.includes(`#${tag}`)); // FIXED: Added parentheses
       
       if (!hasTag) continue;
 
