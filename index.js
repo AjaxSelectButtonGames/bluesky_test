@@ -1,18 +1,115 @@
 require('dotenv').config();
 const { BskyAgent, RichText } = require('@atproto/api');
+const sqlite3 = require('sqlite3').verbose();
+const { promisify } = require('util');
 
 // Configuration
 const SPOTLIGHT_USER = process.env.SPOTLIGHT_USER || 'yourhandle.bsky.social';
 const POST_INTERVAL = 4 * 60 * 60 * 1000; // Post every 4 hours
 const CHECK_INTERVAL = 10 * 60 * 1000; // Check for new submissions every 10 minutes
 
-const FOLLOWED_DIDS = new Set();
-const POSTED_URIS = new Set();
-let postQueue = [];
-
 const agent = new BskyAgent({
   service: 'https://bsky.social'
 });
+
+// Initialize SQLite database
+const db = new sqlite3.Database('bot-state.db');
+const dbRun = promisify(db.run.bind(db));
+const dbGet = promisify(db.get.bind(db));
+const dbAll = promisify(db.all.bind(db));
+
+async function initDatabase() {
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS posted_uris (
+      uri TEXT PRIMARY KEY,
+      posted_at INTEGER
+    )
+  `);
+  
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS followed_dids (
+      did TEXT PRIMARY KEY,
+      followed_at INTEGER
+    )
+  `);
+  
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS post_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      author TEXT,
+      author_did TEXT,
+      text TEXT,
+      uri TEXT UNIQUE,
+      timestamp INTEGER
+    )
+  `);
+  
+  console.log('📂 Database initialized');
+}
+
+async function isPosted(uri) {
+  const row = await dbGet('SELECT uri FROM posted_uris WHERE uri = ?', [uri]);
+  return !!row;
+}
+
+async function markAsPosted(uri) {
+  await dbRun(
+    'INSERT OR IGNORE INTO posted_uris (uri, posted_at) VALUES (?, ?)',
+    [uri, Date.now()]
+  );
+}
+
+async function isFollowed(did) {
+  const row = await dbGet('SELECT did FROM followed_dids WHERE did = ?', [did]);
+  return !!row;
+}
+
+async function markAsFollowed(did) {
+  await dbRun(
+    'INSERT OR IGNORE INTO followed_dids (did, followed_at) VALUES (?, ?)',
+    [did, Date.now()]
+  );
+}
+
+async function addToQueue(submission) {
+  try {
+    await dbRun(
+      'INSERT OR IGNORE INTO post_queue (author, author_did, text, uri, timestamp) VALUES (?, ?, ?, ?, ?)',
+      [submission.author, submission.authorDid, submission.text, submission.uri, submission.timestamp]
+    );
+  } catch (err) {
+    // Ignore duplicate key errors
+    if (!err.message.includes('UNIQUE constraint')) {
+      throw err;
+    }
+  }
+}
+
+async function getNextFromQueue() {
+  const row = await dbGet('SELECT * FROM post_queue ORDER BY timestamp ASC LIMIT 1');
+  return row;
+}
+
+async function removeFromQueue(id) {
+  await dbRun('DELETE FROM post_queue WHERE id = ?', [id]);
+}
+
+async function getQueueSize() {
+  const row = await dbGet('SELECT COUNT(*) as count FROM post_queue');
+  return row.count;
+}
+
+async function getStats() {
+  const posted = await dbGet('SELECT COUNT(*) as count FROM posted_uris');
+  const followed = await dbGet('SELECT COUNT(*) as count FROM followed_dids');
+  const queued = await getQueueSize();
+  
+  return {
+    posted: posted.count,
+    followed: followed.count,
+    queued: queued
+  };
+}
 
 async function login() {
   try {
@@ -29,20 +126,22 @@ async function login() {
 }
 
 async function autoFollow(did) {
-  if (FOLLOWED_DIDS.has(did)) return;
+  if (await isFollowed(did)) {
+    return;
+  }
   
   try {
     const profile = await agent.getProfile({ actor: did });
     
     if (profile.data.viewer?.following) {
       console.log("Already following", profile.data.handle);
-      FOLLOWED_DIDS.add(did);
+      await markAsFollowed(did);
       return;
     }
     
     console.log("➕ Following user:", profile.data.handle);
     await agent.follow(did);
-    FOLLOWED_DIDS.add(did);
+    await markAsFollowed(did);
     await sleep(2000);
   } catch (err) {
     console.error("Auto-follow error:", err.message);
@@ -59,7 +158,7 @@ async function checkForSubmissions() {
     for (const notif of notifications.data.notifications) {
       if (notif.reason !== 'mention' && notif.reason !== 'reply') continue;
       if (!notif.record?.text) continue;
-      if (POSTED_URIS.has(notif.uri)) continue;
+      if (await isPosted(notif.uri)) continue;
       
       const text = notif.record.text;
       const authorDid = notif.author.did;
@@ -71,7 +170,7 @@ async function checkForSubmissions() {
         
         console.log("📬 New submission from @" + authorHandle);
         
-        postQueue.push({
+        await addToQueue({
           author: authorHandle,
           authorDid: authorDid,
           text: text,
@@ -79,7 +178,7 @@ async function checkForSubmissions() {
           timestamp: Date.now()
         });
         
-        POSTED_URIS.add(notif.uri);
+        await markAsPosted(notif.uri);
         
         // Follow the submitter
         await autoFollow(authorDid);
@@ -102,7 +201,7 @@ async function checkForSubmissions() {
     
     for (const feedItem of spotlightPosts.data.feed) {
       const post = feedItem.post;
-      if (POSTED_URIS.has(post.uri)) continue;
+      if (await isPosted(post.uri)) continue;
       
       const text = post.record?.text || '';
       if (text.toLowerCase().includes('#spotlight') || 
@@ -110,7 +209,7 @@ async function checkForSubmissions() {
         
         console.log("📬 New spotlight post from designated user");
         
-        postQueue.push({
+        await addToQueue({
           author: post.author.handle,
           authorDid: post.author.did,
           text: text,
@@ -118,12 +217,13 @@ async function checkForSubmissions() {
           timestamp: Date.now()
         });
         
-        POSTED_URIS.add(post.uri);
+        await markAsPosted(post.uri);
         await autoFollow(post.author.did);
       }
     }
     
-    console.log(`📊 Queue size: ${postQueue.length} posts`);
+    const queueSize = await getQueueSize();
+    console.log(`📊 Queue size: ${queueSize} posts`);
     
   } catch (err) {
     console.error("Submission check error:", err.message);
@@ -131,13 +231,16 @@ async function checkForSubmissions() {
 }
 
 async function postSpotlight() {
-  if (postQueue.length === 0) {
+  console.log("⏰ Post spotlight timer triggered");
+  
+  const submission = await getNextFromQueue();
+  
+  if (!submission) {
     console.log("📭 No posts in queue to spotlight");
     return;
   }
   
-  // Get the oldest post from queue
-  const submission = postQueue.shift();
+  console.log(`📤 Processing spotlight (queue size: ${await getQueueSize()})`);
   
   try {
     console.log("🌟 Spotlighting community from @" + submission.author);
@@ -167,13 +270,15 @@ ${cleanText}
     
     console.log("✅ Posted spotlight for @" + submission.author);
     
+    // Remove from queue
+    await removeFromQueue(submission.id);
+    
     // Follow them if we haven't already
-    await autoFollow(submission.authorDid);
+    await autoFollow(submission.author_did);
     
   } catch (err) {
     console.error("Post error:", err.message);
-    // Put it back in queue if it failed
-    postQueue.unshift(submission);
+    // Leave it in queue to retry later
   }
 }
 
@@ -181,24 +286,41 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log("\n👋 Shutting down bot gracefully...");
-  console.log("📊 Session stats:");
-  console.log("   Posts spotlighted:", POSTED_URIS.size);
-  console.log("   New follows:", FOLLOWED_DIDS.size);
-  console.log("   Queue remaining:", postQueue.length);
-  process.exit(0);
+  
+  const stats = await getStats();
+  console.log("📊 Final stats:");
+  console.log("   Posts spotlighted:", stats.posted);
+  console.log("   Users followed:", stats.followed);
+  console.log("   Queue remaining:", stats.queued);
+  
+  db.close((err) => {
+    if (err) {
+      console.error('Error closing database:', err);
+    } else {
+      console.log('✅ Database closed');
+    }
+    process.exit(0);
+  });
 });
 
 async function main() {
   console.log("🚀 Community Spotlight Bot Starting...");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   
+  // Initialize database
+  await initDatabase();
+  
   const loggedIn = await login();
   if (!loggedIn) {
     console.error("Failed to login. Exiting.");
     return;
   }
+  
+  // Show current stats
+  const stats = await getStats();
+  console.log(`📊 Current state: ${stats.posted} posted, ${stats.followed} followed, ${stats.queued} queued`);
   
   console.log("📢 Ready to spotlight small communities!");
   console.log("💡 Mention this bot with #spotlight or #promote to submit");
@@ -208,17 +330,21 @@ async function main() {
   // Initial check
   await checkForSubmissions();
   
+  // Post immediately if we have items in queue
+  if (await getQueueSize() > 0) {
+    console.log("🎯 Queue has items, posting first spotlight now...");
+    await postSpotlight();
+  }
+  
   // Check for new submissions regularly
   setInterval(checkForSubmissions, CHECK_INTERVAL);
   
   // Post spotlights on interval
   setInterval(postSpotlight, POST_INTERVAL);
-  
-  // Also post one shortly after startup if queue has items
-  setTimeout(postSpotlight, 30 * 1000);
 }
 
 main().catch(err => {
   console.error("💥 Fatal error:", err);
+  db.close();
   process.exit(1);
 });
