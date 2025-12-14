@@ -251,14 +251,18 @@ async function postSpotlight() {
       .replace(/#promote/gi, '')
       .trim();
     
+    // Truncate if too long (leave room for our template + hashtags)
+    const maxContentLength = 200; // Reserve 100 chars for template/hashtags
+    if (cleanText.length > maxContentLength) {
+      cleanText = cleanText.substring(0, maxContentLength) + '...';
+    }
+    
     // Create spotlight post
-    const spotlightText = `🌟 Community Spotlight 🌟
-
-Featuring: @${submission.author}
+    const spotlightText = `🌟 Spotlight: @${submission.author}
 
 ${cleanText}
 
-#IndieSpotlight #CommunityLove #SmallCommunities`;
+#IndieSpotlight #SmallCommunities`;
     
     const rt = new RichText({ text: spotlightText });
     await rt.detectFacets(agent);
