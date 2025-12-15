@@ -177,48 +177,58 @@ async function followBack() {
 
 // Expanded keyword detection
 const PROMO_KEYWORDS = [
-  'startup', 'launched', 'beta', 'demo', 'side project', 'app', 'game',
-  'founder', 'product', 'prototype', 'mvp', 'new project'
+  'launched', 'built this', 'made this', 'working on', 'side project',
+  'feedback welcome', 'check out my', 'just shipped', 'new project',
+  'my app', 'my game', 'my product', 'my startup'
 ];
 
 const COMMUNITY_KEYWORDS = [
-  '#spotlight', '#promote', '#indiehackers', '#buildinpublic', 
-  '#indiedev', '#solopreneur', '#maker', '#creators', 
-  'show hn', 'built this', 'working on',
-  'feedback welcome', 'just launched', 'check out my',
-  'made this', 'shipped', 'building in public'
+  '#spotlight', '#promote', '#buildinpublic', '#indiehackers', 
+  '#indiedev', '#solopreneur', '#maker'
 ];
 
-// Spam patterns to reject
+// Spam patterns to reject - EXPANDED
 const SPAM_PATTERNS = [
-  'cupom', 'precinho', 'amazon', 'iphone 17', 'playstation',
-  'breaking:', 'breaking news', 'cbs', 'nba', 'nfl', 'sports'
+  'cupom', 'precinho', 'amazon', 'iphone', 'playstation', 'nintendo',
+  'breaking:', 'breaking news', 'cbs', 'nbc', 'nba', 'nfl', 'sports',
+  'Bulls', 'Lakers', 'game highlights', 'score', 'final score',
+  'preço', 'oferta', 'desconto', 'compre', 'deal', 'sale',
+  'laser', 'filament', '3d print', 'cutting', 'engraving',
+  'news:', 'report:', 'mayor', 'election', 'politics',
+  'watch:', 'video:', 'stream:', 'live now', 'tune in'
 ];
 
 function looksLikePromo(text) {
   const lower = (text || '').toLowerCase();
   
-  // Reject spam/news first
+  // REJECT spam/news FIRST
   if (SPAM_PATTERNS.some(spam => lower.includes(spam))) {
     return false;
   }
   
-  const hasLink = lower.includes('http://') || lower.includes('https://');
-  const hasCommunityTag = COMMUNITY_KEYWORDS.some(tag => lower.includes(tag.toLowerCase()));
+  // REJECT if it's just a link with no context
+  const linkCount = (lower.match(/https?:\/\//g) || []).length;
+  if (linkCount > 2) {
+    return false; // Multiple links = spam
+  }
   
-  // Strong signal: has spotlight/promote hashtags
+  // STRONG SIGNAL: Has #spotlight or #promote hashtags
   if (lower.includes('#spotlight') || lower.includes('#promote')) {
     return true;
   }
   
-  // Medium signal: has community tags
-  if (hasCommunityTag) {
+  // MEDIUM SIGNAL: Has #buildinpublic or #indiehackers
+  if (lower.includes('#buildinpublic') || lower.includes('#indiehackers') || 
+      lower.includes('#indiedev') || lower.includes('#solopreneur')) {
     return true;
   }
   
-  // Weak signal: only accept if has link + multiple keywords
-  const keywordCount = PROMO_KEYWORDS.filter(word => lower.includes(word)).length;
-  if (hasLink && keywordCount >= 2) {
+  // WEAK SIGNAL: Must have BOTH a link AND multiple strong keywords
+  const hasLink = lower.includes('http://') || lower.includes('https://');
+  const keywordMatches = PROMO_KEYWORDS.filter(word => lower.includes(word));
+  
+  // Need at least 2 keywords + link to qualify
+  if (hasLink && keywordMatches.length >= 2) {
     return true;
   }
   
