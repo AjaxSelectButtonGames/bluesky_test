@@ -6,9 +6,10 @@ const { promisify } = require('util');
 // Configuration
 const SPOTLIGHT_USER = process.env.SPOTLIGHT_USER || 'yourhandle.bsky.social';
 const POST_INTERVAL = 10 * 60 * 1000; // Post every 10 minutes
-const CHECK_INTERVAL = 15 * 60 * 1000;     // Check for new submissions every 10 minutes
-const SEARCH_INTERVAL = 20 * 60 * 1000;    // Search Bluesky every 20 minutes
-const FOLLOWBACK_INTERVAL = 10 * 60 * 1000 // Follow back every 12 hours
+const CHECK_INTERVAL = 15 * 60 * 1000;     // Check for new submissions every 15 minutes
+const SEARCH_INTERVAL = 15 * 60 * 1000;    // Search Bluesky every 15 minutes
+const NETWORK_INTERVAL = 30 * 60 * 1000;   // Search following network every 30 minutes
+const FOLLOWBACK_INTERVAL = 10 * 60 * 1000 // Follow back every 10 minutes
 
 const agent = new BskyAgent({ service: 'https://bsky.social' });
 
@@ -147,35 +148,60 @@ async function followBack() {
   }
 }
 
-// Keyword detection (promo-oriented + link presence)
+// Expanded keyword detection
 const PROMO_KEYWORDS = [
   'startup', 'launch', 'beta', 'demo', 'project', 'app', 'game',
   'founder', 'product', 'prototype', 'mvp', 'update', 'release'
+];
+
+const COMMUNITY_KEYWORDS = [
+  '#spotlight', '#promote', '#indiehackers', '#buildinpublic', 
+  '#indiedev', '#solopreneur', '#maker', '#creators', 
+  'show hn', 'built this', 'working on', 'side project',
+  'feedback welcome', 'just launched', 'new project', 'check out',
+  'made this', 'building', 'shipped'
 ];
 
 function looksLikePromo(text) {
   const lower = (text || '').toLowerCase();
   const hasLink = lower.includes('http://') || lower.includes('https://');
   const hasKeyword = PROMO_KEYWORDS.some(word => lower.includes(word));
-  return hasKeyword || hasLink;
+  const hasCommunityTag = COMMUNITY_KEYWORDS.some(tag => lower.includes(tag.toLowerCase()));
+  
+  // More lenient: community tags OR (link + keyword)
+  return hasCommunityTag || (hasLink && hasKeyword);
 }
 
 async function addPostIfRelevant(post, sourceLabel = 'search') {
   const uri = post?.uri;
-  if (!uri) return;
-  if (await isPosted(uri)) return;
+  if (!uri) {
+    return;
+  }
+  
+  if (await isPosted(uri)) {
+    return;
+  }
 
   const text = post?.record?.text || post?.text || '';
-  if (!text) return;
+  if (!text) {
+    return;
+  }
 
-  if (
-    text.toLowerCase().includes('#spotlight') ||
-    text.toLowerCase().includes('#promote') ||
-    looksLikePromo(text)
-  ) {
-    const authorHandle = post?.author?.handle || 'unknown';
+  const authorHandle = post?.author?.handle || 'unknown';
+  
+  // Skip your own posts
+  const ownHandle = process.env.BLUESKY_USERNAME.replace('.bsky.social', '');
+  if (authorHandle === ownHandle || authorHandle.includes(ownHandle)) {
+    console.log(`   ⏭️ Skipped own post from @${authorHandle}`);
+    return;
+  }
+
+  const matches = looksLikePromo(text);
+  
+  if (matches) {
     const authorDid = post?.author?.did || 'unknown';
-    console.log(`📬 [${sourceLabel}] Queuing post from @${authorHandle}`);
+    console.log(`   ✅ [${sourceLabel}] Queuing post from @${authorHandle}`);
+    console.log(`      Preview: ${text.substring(0, 100)}...`);
     await addToQueue({
       author: authorHandle,
       authorDid,
@@ -190,33 +216,87 @@ async function addPostIfRelevant(post, sourceLabel = 'search') {
 
 async function searchStartupPosts() {
   try {
-    console.log('🔍 Searching Bluesky for startup posts...');
-    for (const keyword of PROMO_KEYWORDS) {
-      // Correct search endpoint via agent namespace
-      const resp = await agent.app.bsky.feed.searchPosts({ q: keyword, limit: 25 });
-      const posts = resp?.data?.posts || [];
-      for (const post of posts) {
-        await addPostIfRelevant(post, `search:${keyword}`);
+    console.log('🔍 Searching Bluesky for community posts...');
+    
+    // Search all keywords including hashtags
+    const allSearchTerms = [...PROMO_KEYWORDS, ...COMMUNITY_KEYWORDS];
+    
+    for (const keyword of allSearchTerms) {
+      try {
+        const resp = await agent.app.bsky.feed.searchPosts({ 
+          q: keyword, 
+          limit: 25,
+          sort: 'latest'
+        });
+        const posts = resp?.data?.posts || [];
+        console.log(`   Found ${posts.length} posts for "${keyword}"`);
+        
+        for (const post of posts) {
+          await addPostIfRelevant(post, `search:${keyword}`);
+        }
+        await sleep(1000);
+      } catch (err) {
+        console.error(`   Search failed for "${keyword}":`, err.message);
       }
-      await sleep(500); // small delay to be polite
     }
-    console.log(`📊 Search complete. Queue size: ${await getQueueSize()}`);
+    
+    const queueSize = await getQueueSize();
+    console.log(`📊 Search complete. Queue size: ${queueSize}`);
+    
+    if (queueSize === 0) {
+      console.log('⚠️ Queue is empty after search - may need to adjust keywords');
+    }
   } catch (err) {
     console.error('Search error:', err.message);
+  }
+}
+
+async function searchFollowingNetwork() {
+  try {
+    console.log('👥 Checking posts from following network...');
+    
+    const following = await agent.getFollows({
+      actor: process.env.BLUESKY_USERNAME,
+      limit: 50
+    });
+    
+    let checkedCount = 0;
+    for (const user of following.data.follows) {
+      try {
+        const feed = await agent.getAuthorFeed({ 
+          actor: user.did, 
+          limit: 10 
+        });
+        
+        for (const feedItem of feed.data.feed) {
+          await addPostIfRelevant(feedItem.post, `following:${user.handle}`);
+        }
+        checkedCount++;
+        await sleep(500);
+      } catch (err) {
+        console.error(`   Error checking @${user.handle}:`, err.message);
+      }
+    }
+    
+    console.log(`📊 Network search complete (checked ${checkedCount} users). Queue: ${await getQueueSize()}`);
+  } catch (err) {
+    console.error('Network search error:', err.message);
   }
 }
 
 async function checkForSubmissions() {
   try {
     console.log('🔎 Checking mentions/replies + spotlight feed...');
+    
     // Mentions and replies
     const notifications = await agent.listNotifications({ limit: 50 });
+    let foundCount = 0;
+    
     for (const notif of notifications.data.notifications) {
       const isRelevantReason = notif.reason === 'mention' || notif.reason === 'reply';
       if (!isRelevantReason) continue;
       if (!notif.record?.text) continue;
 
-      // Avoid reprocessing the same URI
       if (await isPosted(notif.uri)) continue;
 
       const text = notif.record.text;
@@ -238,6 +318,8 @@ async function checkForSubmissions() {
         });
         await markAsPosted(notif.uri);
         await autoFollow(authorDid);
+        foundCount++;
+        
         try {
           await agent.like(notif.uri, notif.cid);
           console.log('❤️ Liked submission from @' + authorHandle);
@@ -255,7 +337,7 @@ async function checkForSubmissions() {
       await addPostIfRelevant(post, 'spotlightUser');
     }
 
-    console.log(`📊 Queue size: ${await getQueueSize()} posts`);
+    console.log(`📊 Found ${foundCount} new submissions. Queue size: ${await getQueueSize()} posts`);
   } catch (err) {
     console.error('Submission check error:', err.message);
   }
@@ -280,7 +362,7 @@ async function postSpotlight() {
       .trim();
 
     // Truncate to fit template
-    const maxContentLength = 200; // reserve room for template + hashtags
+    const maxContentLength = 200;
     if (cleanText.length > maxContentLength) {
       cleanText = cleanText.substring(0, maxContentLength) + '...';
     }
@@ -355,20 +437,28 @@ async function main() {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
   // Initial discovery runs
+  console.log('🎯 Running initial discovery...');
   await checkForSubmissions();
   await searchStartupPosts();
+  await searchFollowingNetwork();
 
   // If queue has items, post one immediately
-  if (await getQueueSize() > 0) {
-    console.log('🎯 Queue has items, posting first spotlight now...');
+  const initialQueue = await getQueueSize();
+  if (initialQueue > 0) {
+    console.log(`🎯 Queue has ${initialQueue} items, posting first spotlight now...`);
     await postSpotlight();
+  } else {
+    console.log('⚠️ Queue is empty after initial discovery - will retry on intervals');
   }
 
   // Regular intervals
   setInterval(checkForSubmissions, CHECK_INTERVAL);
   setInterval(searchStartupPosts, SEARCH_INTERVAL);
+  setInterval(searchFollowingNetwork, NETWORK_INTERVAL);
   setInterval(postSpotlight, POST_INTERVAL);
   setInterval(followBack, FOLLOWBACK_INTERVAL);
+  
+  console.log('✅ All intervals scheduled. Bot is now running!');
 }
 
 main().catch(err => {
