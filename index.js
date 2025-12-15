@@ -189,13 +189,31 @@ const COMMUNITY_KEYWORDS = [
 
 // Spam patterns to reject - EXPANDED
 const SPAM_PATTERNS = [
+  // Shopping spam
   'cupom', 'precinho', 'amazon', 'iphone', 'playstation', 'nintendo',
+  'preço', 'oferta', 'desconto', 'compre', 'deal', 'sale',
+  'lumens', 'flashlight', 'rechargeable', 'pack -', 'camera -',
+  'wireless security', 'night vision', 'arlo', 'olight',
+  
+  // News/Sports
   'breaking:', 'breaking news', 'cbs', 'nbc', 'nba', 'nfl', 'sports',
   'Bulls', 'Lakers', 'game highlights', 'score', 'final score',
-  'preço', 'oferta', 'desconto', 'compre', 'deal', 'sale',
-  'laser', 'filament', '3d print', 'cutting', 'engraving',
   'news:', 'report:', 'mayor', 'election', 'politics',
-  'watch:', 'video:', 'stream:', 'live now', 'tune in'
+  'watch:', 'video:', 'stream:', 'live now', 'tune in',
+  
+  // Hardware/Physical products
+  'laser', 'filament', '3d print', 'cutting', 'engraving',
+  
+  // Academic
+  'journal', 'research paper', 'academic', 'university', 'optica.org',
+  'summary by', 'spotlight summary', 'spotlightsunday'
+];
+
+// Context words that indicate it's NOT indie dev content
+const BAD_CONTEXT = [
+  'buy now', 'order', 'purchase', 'shipping', 'delivery',
+  'lumens', 'battery', 'waterproof', 'durable', 'warranty',
+  'research', 'study', 'paper', 'journal', 'academic'
 ];
 
 function looksLikePromo(text) {
@@ -206,15 +224,37 @@ function looksLikePromo(text) {
     return false;
   }
   
+  // REJECT if it has bad context (shopping/academic language)
+  if (BAD_CONTEXT.some(bad => lower.includes(bad))) {
+    return false;
+  }
+  
   // REJECT if it's just a link with no context
   const linkCount = (lower.match(/https?:\/\//g) || []).length;
   if (linkCount > 2) {
     return false; // Multiple links = spam
   }
   
-  // STRONG SIGNAL: Has #spotlight or #promote hashtags
-  if (lower.includes('#spotlight') || lower.includes('#promote')) {
+  // If text is too short (< 20 chars), reject unless it has #promote
+  if (text.length < 20 && !lower.includes('#promote')) {
+    return false;
+  }
+  
+  // STRONG SIGNAL: Has #promote hashtag (more specific than #spotlight)
+  if (lower.includes('#promote')) {
     return true;
+  }
+  
+  // MEDIUM SIGNAL: Has #spotlight AND indie dev context
+  if (lower.includes('#spotlight')) {
+    const hasDevContext = [
+      'built', 'made', 'working on', 'project', 'app', 'game', 
+      'website', 'startup', 'launch', 'feedback', 'beta'
+    ].some(word => lower.includes(word));
+    
+    if (hasDevContext) {
+      return true;
+    }
   }
   
   // MEDIUM SIGNAL: Has #buildinpublic or #indiehackers
@@ -287,18 +327,17 @@ async function searchStartupPosts() {
   try {
     console.log('🔍 Searching Bluesky for community posts...');
     
-    // Only search most relevant terms to reduce noise
+    // ONLY search for explicit promotion hashtags
     const focusedSearchTerms = [
       '#spotlight', '#promote', '#buildinpublic', '#indiehackers',
-      '#indiedev', '#solopreneur', 'show hn', 'built this',
-      'just launched', 'side project', 'feedback welcome'
+      '#indiedev', '#solopreneur'
     ];
     
     for (const keyword of focusedSearchTerms) {
       try {
         const resp = await agent.app.bsky.feed.searchPosts({ 
           q: keyword, 
-          limit: 25
+          limit: 15 // Reduced from 25 to get less noise
         });
         const posts = resp?.data?.posts || [];
         console.log(`   Found ${posts.length} posts for "${keyword}"`);
@@ -306,7 +345,7 @@ async function searchStartupPosts() {
         for (const post of posts) {
           await addPostIfRelevant(post, `search:${keyword}`);
         }
-        await sleep(1000);
+        await sleep(1500); // Slower to be more careful
       } catch (err) {
         console.error(`   Search failed for "${keyword}":`, err.message);
       }
@@ -337,7 +376,7 @@ async function searchFollowingNetwork() {
       try {
         const feed = await agent.getAuthorFeed({ 
           actor: user.did, 
-          limit: 10 
+          limit: 5 // Reduced from 10 to check less per user
         });
         
         for (const feedItem of feed.data.feed) {
