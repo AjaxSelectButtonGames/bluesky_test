@@ -45,6 +45,15 @@ async function initDatabase() {
     )
   `);
 
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS blocklist (
+      did TEXT PRIMARY KEY,
+      handle TEXT,
+      reason TEXT,
+      added_at INTEGER
+    )
+  `);
+
   console.log('📂 Database initialized');
 }
 
@@ -64,6 +73,23 @@ async function isFollowed(did) {
 
 async function markAsFollowed(did) {
   await dbRun('INSERT OR IGNORE INTO followed_dids (did, followed_at) VALUES (?, ?)', [did, Date.now()]);
+}
+
+async function isBlocked(did) {
+  const row = await dbGet('SELECT did FROM blocklist WHERE did = ?', [did]);
+  return !!row;
+}
+
+async function addToBlocklist(did, handle, reason = 'user request') {
+  await dbRun(
+    'INSERT OR IGNORE INTO blocklist (did, handle, reason, added_at) VALUES (?, ?, ?, ?)',
+    [did, handle, reason, Date.now()]
+  );
+  console.log(`🚫 Added @${handle} to blocklist (${reason})`);
+}
+
+async function removeFromBlocklist(did) {
+  await dbRun('DELETE FROM blocklist WHERE did = ?', [did]);
 }
 
 async function addToQueue(submission) {
@@ -94,8 +120,9 @@ async function getQueueSize() {
 async function getStats() {
   const posted = await dbGet('SELECT COUNT(*) as count FROM posted_uris');
   const followed = await dbGet('SELECT COUNT(*) as count FROM followed_dids');
+  const blocked = await dbGet('SELECT COUNT(*) as count FROM blocklist');
   const queued = await getQueueSize();
-  return { posted: posted.count, followed: followed.count, queued };
+  return { posted: posted.count, followed: followed.count, blocked: blocked.count, queued };
 }
 
 async function login() {
@@ -214,6 +241,13 @@ async function addPostIfRelevant(post, sourceLabel = 'search') {
   }
 
   const authorHandle = post?.author?.handle || 'unknown';
+  const authorDid = post?.author?.did || 'unknown';
+  
+  // Check blocklist FIRST
+  if (await isBlocked(authorDid)) {
+    console.log(`   🚫 Skipped: @${authorHandle} is blocked`);
+    return;
+  }
   
   // Skip your own posts
   const ownHandle = process.env.BLUESKY_USERNAME.replace('.bsky.social', '');
@@ -225,7 +259,6 @@ async function addPostIfRelevant(post, sourceLabel = 'search') {
   const matches = looksLikePromo(text);
   
   if (matches) {
-    const authorDid = post?.author?.did || 'unknown';
     console.log(`   ✅ [${sourceLabel}] Queuing post from @${authorHandle}`);
     console.log(`      Preview: ${text.substring(0, 100)}...`);
     await addToQueue({
@@ -326,11 +359,54 @@ async function checkForSubmissions() {
       if (!isRelevantReason) continue;
       if (!notif.record?.text) continue;
 
-      if (await isPosted(notif.uri)) continue;
-
       const text = notif.record.text;
       const authorDid = notif.author.did;
       const authorHandle = notif.author.handle;
+
+      // Check for opt-out requests
+      const lowerText = text.toLowerCase();
+      if (lowerText.includes('stop') || lowerText.includes('unfollow') || 
+          lowerText.includes('dont follow') || lowerText.includes("don't follow") ||
+          lowerText.includes('opt out') || lowerText.includes('remove me') ||
+          lowerText.includes('no bot') || lowerText.includes('unsubscribe')) {
+        
+        await addToBlocklist(authorDid, authorHandle, 'user request via mention');
+        
+        // Unfollow them if we're following
+        try {
+          const profile = await agent.getProfile({ actor: authorDid });
+          if (profile.data.viewer?.following) {
+            await agent.deleteFollow(profile.data.viewer.following);
+            console.log(`👋 Unfollowed @${authorHandle} per their request`);
+          }
+        } catch (err) {
+          console.error('Unfollow error:', err.message);
+        }
+        
+        // Reply to confirm
+        try {
+          await agent.post({
+            text: `@${authorHandle} Got it! I've removed you from my spotlight list and won't feature your content. Sorry for any inconvenience! 👍`,
+            reply: {
+              root: { uri: notif.uri, cid: notif.cid },
+              parent: { uri: notif.uri, cid: notif.cid }
+            }
+          });
+          console.log(`✅ Replied to @${authorHandle} confirming opt-out`);
+        } catch (err) {
+          console.error('Reply error:', err.message);
+        }
+        
+        continue;
+      }
+
+      if (await isPosted(notif.uri)) continue;
+
+      // Check if they're blocked
+      if (await isBlocked(authorDid)) {
+        console.log(`   🚫 Skipped mention from blocked user @${authorHandle}`);
+        continue;
+      }
 
       if (
         text.toLowerCase().includes('#spotlight') ||
@@ -431,6 +507,7 @@ process.on('SIGINT', async () => {
     console.log('📊 Final stats:');
     console.log('   Posts spotlighted:', stats.posted);
     console.log('   Users followed:', stats.followed);
+    console.log('   Users blocked:', stats.blocked);
     console.log('   Queue remaining:', stats.queued);
   } catch (e) {
     console.error('Error fetching final stats:', e?.message || e);
@@ -459,7 +536,7 @@ async function main() {
   }
 
   const stats = await getStats();
-  console.log(`📊 Current state: ${stats.posted} posted, ${stats.followed} followed, ${stats.queued} queued`);
+  console.log(`📊 Current state: ${stats.posted} posted, ${stats.followed} followed, ${stats.blocked} blocked, ${stats.queued} queued`);
   console.log('📢 Ready to spotlight small communities!');
   console.log('💡 Mention this bot with #spotlight or #promote to submit');
   console.log(`📬 Also watching @${SPOTLIGHT_USER} for submissions`);
