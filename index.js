@@ -5,10 +5,10 @@ const { promisify } = require('util');
 
 // Configuration
 const SPOTLIGHT_USER = process.env.SPOTLIGHT_USER || 'yourhandle.bsky.social';
-const POST_INTERVAL = 4 * 60 * 60 * 1000; // Post every 4 hours
-const CHECK_INTERVAL = 10 * 60 * 1000;     // Check for new submissions every 10 minutes
+const POST_INTERVAL = 10 * 60 * 1000; // Post every 10 minutes
+const CHECK_INTERVAL = 15 * 60 * 1000;     // Check for new submissions every 10 minutes
 const SEARCH_INTERVAL = 20 * 60 * 1000;    // Search Bluesky every 20 minutes
-const FOLLOWBACK_INTERVAL = 12 * 60 * 60 * 1000; // Follow back every 12 hours
+const FOLLOWBACK_INTERVAL = 10 * 60 * 1000 // Follow back every 12 hours
 
 const agent = new BskyAgent({ service: 'https://bsky.social' });
 
