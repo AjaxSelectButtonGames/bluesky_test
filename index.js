@@ -112,6 +112,7 @@ async function login() {
 }
 
 async function autoFollow(did) {
+  if (!did) return;
   if (await isFollowed(did)) return;
   try {
     const profile = await agent.getProfile({ actor: did });
@@ -160,10 +161,11 @@ function looksLikePromo(text) {
 }
 
 async function addPostIfRelevant(post, sourceLabel = 'search') {
-  const uri = post.uri;
+  const uri = post?.uri;
+  if (!uri) return;
   if (await isPosted(uri)) return;
 
-  const text = post.record?.text || post.text || '';
+  const text = post?.record?.text || post?.text || '';
   if (!text) return;
 
   if (
@@ -171,8 +173,8 @@ async function addPostIfRelevant(post, sourceLabel = 'search') {
     text.toLowerCase().includes('#promote') ||
     looksLikePromo(text)
   ) {
-    const authorHandle = post.author?.handle || 'unknown';
-    const authorDid = post.author?.did || post.authorDid || 'unknown';
+    const authorHandle = post?.author?.handle || 'unknown';
+    const authorDid = post?.author?.did || 'unknown';
     console.log(`📬 [${sourceLabel}] Queuing post from @${authorHandle}`);
     await addToQueue({
       author: authorHandle,
@@ -190,9 +192,9 @@ async function searchStartupPosts() {
   try {
     console.log('🔍 Searching Bluesky for startup posts...');
     for (const keyword of PROMO_KEYWORDS) {
-      // Note: Depending on SDK version, you may need agent.app.bsky.feed.searchPosts({ q, limit })
-      const feed = await agent.searchPosts({ q: keyword, limit: 25 });
-      const posts = feed?.data?.posts || [];
+      // Correct search endpoint via agent namespace
+      const resp = await agent.app.bsky.feed.searchPosts({ q: keyword, limit: 25 });
+      const posts = resp?.data?.posts || [];
       for (const post of posts) {
         await addPostIfRelevant(post, `search:${keyword}`);
       }
