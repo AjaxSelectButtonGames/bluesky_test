@@ -150,26 +150,52 @@ async function followBack() {
 
 // Expanded keyword detection
 const PROMO_KEYWORDS = [
-  'startup', 'launch', 'beta', 'demo', 'project', 'app', 'game',
-  'founder', 'product', 'prototype', 'mvp', 'update', 'release'
+  'startup', 'launched', 'beta', 'demo', 'side project', 'app', 'game',
+  'founder', 'product', 'prototype', 'mvp', 'new project'
 ];
 
 const COMMUNITY_KEYWORDS = [
   '#spotlight', '#promote', '#indiehackers', '#buildinpublic', 
   '#indiedev', '#solopreneur', '#maker', '#creators', 
-  'show hn', 'built this', 'working on', 'side project',
-  'feedback welcome', 'just launched', 'new project', 'check out',
-  'made this', 'building', 'shipped'
+  'show hn', 'built this', 'working on',
+  'feedback welcome', 'just launched', 'check out my',
+  'made this', 'shipped', 'building in public'
+];
+
+// Spam patterns to reject
+const SPAM_PATTERNS = [
+  'cupom', 'precinho', 'amazon', 'iphone 17', 'playstation',
+  'breaking:', 'breaking news', 'cbs', 'nba', 'nfl', 'sports'
 ];
 
 function looksLikePromo(text) {
   const lower = (text || '').toLowerCase();
+  
+  // Reject spam/news first
+  if (SPAM_PATTERNS.some(spam => lower.includes(spam))) {
+    return false;
+  }
+  
   const hasLink = lower.includes('http://') || lower.includes('https://');
-  const hasKeyword = PROMO_KEYWORDS.some(word => lower.includes(word));
   const hasCommunityTag = COMMUNITY_KEYWORDS.some(tag => lower.includes(tag.toLowerCase()));
   
-  // More lenient: community tags OR (link + keyword)
-  return hasCommunityTag || (hasLink && hasKeyword);
+  // Strong signal: has spotlight/promote hashtags
+  if (lower.includes('#spotlight') || lower.includes('#promote')) {
+    return true;
+  }
+  
+  // Medium signal: has community tags
+  if (hasCommunityTag) {
+    return true;
+  }
+  
+  // Weak signal: only accept if has link + multiple keywords
+  const keywordCount = PROMO_KEYWORDS.filter(word => lower.includes(word)).length;
+  if (hasLink && keywordCount >= 2) {
+    return true;
+  }
+  
+  return false;
 }
 
 async function addPostIfRelevant(post, sourceLabel = 'search') {
@@ -218,15 +244,18 @@ async function searchStartupPosts() {
   try {
     console.log('🔍 Searching Bluesky for community posts...');
     
-    // Search all keywords including hashtags
-    const allSearchTerms = [...PROMO_KEYWORDS, ...COMMUNITY_KEYWORDS];
+    // Only search most relevant terms to reduce noise
+    const focusedSearchTerms = [
+      '#spotlight', '#promote', '#buildinpublic', '#indiehackers',
+      '#indiedev', '#solopreneur', 'show hn', 'built this',
+      'just launched', 'side project', 'feedback welcome'
+    ];
     
-    for (const keyword of allSearchTerms) {
+    for (const keyword of focusedSearchTerms) {
       try {
         const resp = await agent.app.bsky.feed.searchPosts({ 
           q: keyword, 
-          limit: 25,
-          sort: 'latest'
+          limit: 25
         });
         const posts = resp?.data?.posts || [];
         console.log(`   Found ${posts.length} posts for "${keyword}"`);
