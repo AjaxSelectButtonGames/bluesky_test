@@ -523,19 +523,35 @@ async function postSpotlight() {
   try {
     console.log('🌟 Spotlighting community from @' + submission.author);
 
-    // Clean up text (remove hashtags)
+    // Clean up text (remove hashtags and extra whitespace)
     let cleanText = (submission.text || '')
       .replace(/#spotlight/gi, '')
       .replace(/#promote/gi, '')
+      .replace(/#buildinpublic/gi, '')
+      .replace(/#indiehackers/gi, '')
+      .replace(/#indiedev/gi, '')
+      .replace(/#solopreneur/gi, '')
       .trim();
 
     // Convert AT URI to web URL
     const postUrl = convertAtUriToWebUrl(submission.uri, submission.author);
 
-    // Truncate to fit template (adjusted for link)
-    const maxContentLength = 180; // Reduced to make room for the link
+    // Calculate how much space we have for content
+    // Template: "🌟 Spotlight: @username\n\n[TEXT]\n\n👉 [URL]\n\n#IndieSpotlight"
+    const templateLength = 
+      '🌟 Spotlight: @'.length + 
+      submission.author.length + 
+      '\n\n'.length + 
+      '\n\n👉 '.length + 
+      (postUrl ? postUrl.length : 0) + 
+      '\n\n#IndieSpotlight'.length;
+    
+    const maxTotalLength = 290; // Leave some buffer under 300
+    const maxContentLength = maxTotalLength - templateLength;
+    
+    // Truncate to fit
     if (cleanText.length > maxContentLength) {
-      cleanText = cleanText.substring(0, maxContentLength) + '...';
+      cleanText = cleanText.substring(0, maxContentLength - 3) + '...';
     }
 
     // Build spotlight text with link to original post
@@ -543,7 +559,7 @@ async function postSpotlight() {
       `🌟 Spotlight: @${submission.author}\n\n` +
       `${cleanText}\n\n` +
       (postUrl ? `👉 ${postUrl}\n\n` : '') +
-      `#IndieSpotlight #SmallCommunities`;
+      `#IndieSpotlight`;
 
     const rt = new RichText({ text: spotlightText });
     await rt.detectFacets(agent);
