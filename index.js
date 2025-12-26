@@ -19,6 +19,20 @@ const dbRun = promisify(db.run.bind(db));
 const dbGet = promisify(db.get.bind(db));
 const dbAll = promisify(db.all.bind(db));
 
+// Helper function to convert AT URI to web URL
+function convertAtUriToWebUrl(uri, authorHandle) {
+  // AT URI format: at://did:plc:xxx/app.bsky.feed.post/yyy
+  // Web URL format: https://bsky.app/profile/handle/post/postid
+  try {
+    const parts = uri.split('/');
+    const postId = parts[parts.length - 1];
+    return `https://bsky.app/profile/${authorHandle}/post/${postId}`;
+  } catch (err) {
+    console.error('Error converting URI to web URL:', err.message);
+    return null;
+  }
+}
+
 async function initDatabase() {
   await dbRun(`
     CREATE TABLE IF NOT EXISTS posted_uris (
@@ -515,15 +529,20 @@ async function postSpotlight() {
       .replace(/#promote/gi, '')
       .trim();
 
-    // Truncate to fit template
-    const maxContentLength = 200;
+    // Convert AT URI to web URL
+    const postUrl = convertAtUriToWebUrl(submission.uri, submission.author);
+
+    // Truncate to fit template (adjusted for link)
+    const maxContentLength = 180; // Reduced to make room for the link
     if (cleanText.length > maxContentLength) {
       cleanText = cleanText.substring(0, maxContentLength) + '...';
     }
 
+    // Build spotlight text with link to original post
     const spotlightText =
       `🌟 Spotlight: @${submission.author}\n\n` +
       `${cleanText}\n\n` +
+      (postUrl ? `👉 ${postUrl}\n\n` : '') +
       `#IndieSpotlight #SmallCommunities`;
 
     const rt = new RichText({ text: spotlightText });
