@@ -14,6 +14,7 @@ const SEARCH_INTERVAL = 15 * 60 * 1000;
 const NETWORK_INTERVAL = 30 * 60 * 1000;
 const FOLLOWBACK_INTERVAL = 10 * 60 * 1000;
 const HEALTH_INTERVAL = 5 * 60 * 1000;
+const MAX_POST_AGE_MS = 3 * 24 * 60 * 60 * 1000; 
 
 const MAX_QUEUE = Number(process.env.MAX_QUEUE || 2000);
 const MAX_TEXT_LEN = 280; // Keep some safety; Bluesky supports ~300 but facets/linking can push it.
@@ -170,6 +171,23 @@ function inferTag(text) {
   return 'indie-software';
 }
 
+function isPostTooOld(post) {
+  try {
+    // Posts have indexedAt timestamp from Bluesky
+    const postTime = post?.indexedAt || post?.record?.createdAt;
+    if (!postTime) return false; // If no timestamp, allow it through
+    
+    const postDate = new Date(postTime).getTime();
+    const now = Date.now();
+    const age = now - postDate;
+    
+    return age > MAX_POST_AGE_MS;
+  } catch (err) {
+    console.error('Error checking post age:', err.message);
+    return false; // If error, don't filter it out
+  }
+}
+
 // ---------------- AUTH ----------------
 
 async function login() {
@@ -316,6 +334,12 @@ async function addPostIfRelevant(post, sourceLabel = 'search') {
   if (!uri) return;
   if (await isPosted(uri)) return;
 
+  // NEW: Check post age
+  if (isPostTooOld(post)) {
+    console.log(`⏰ Skipped old post (>3 days) from @${post?.author?.handle || 'unknown'}`);
+    return;
+  }
+
   const text = post?.record?.text || post?.text || '';
   if (!text) return;
 
@@ -345,9 +369,7 @@ async function addPostIfRelevant(post, sourceLabel = 'search') {
       timestamp: Date.now()
     });
 
-    // mark posted for dedupe of discovery
     await markAsPosted(uri);
-
     await autoFollow(authorDid);
   }
 }
